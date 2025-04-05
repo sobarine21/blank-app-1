@@ -1,82 +1,70 @@
 import streamlit as st
 import requests
-from googleapiclient.discovery import build
-from bs4 import BeautifulSoup
 import pandas as pd
-import re
-import warnings
-from urllib.parse import urlparse
 
-warnings.filterwarnings("ignore")
+st.set_page_config(page_title="🔍 Google Business Lead Generator", layout="wide")
 
-st.set_page_config(page_title="Lead Generator", layout="centered")
-st.title("🔍 Lead Generation Web App")
-st.markdown("Enter your business keyword or segment below to search for potential leads using Google Search API.")
+st.title("📍 Google Business Lead Generator")
+st.markdown("Generate business leads by extracting contact details from Google Business Profiles.")
 
-# Input
-query = st.text_input("🔑 Enter Keyword or Business Segment", placeholder="e.g., pet salons mumbai")
+API_KEY = st.secrets["GOOGLE_API_KEY"]  # Set your API key in Streamlit secrets
 
-# API keys (secure with Streamlit secrets)
-API_KEY = st.secrets["GOOGLE_API_KEY"]
-CX = st.secrets["GOOGLE_SEARCH_ENGINE_ID"]
+# Input form
+with st.form("lead_gen_form"):
+    keyword = st.text_input("Enter Business Type or Keywords (e.g., pet salon, cafe, etc.)", "pet salon")
+    location = st.text_input("Enter Location (e.g., Mumbai, Delhi, etc.)", "Mumbai")
+    radius = st.slider("Search Radius (in meters)", 500, 50000, 5000)
+    submitted = st.form_submit_button("Search Businesses")
 
-# Utility: Extract email and phone
-def extract_contacts(html):
-    soup = BeautifulSoup(html, "html.parser")
-    text = soup.get_text()
-    phones = set(re.findall(r"\+?\d[\d\s\-()]{7,}\d", text))
-    emails = set(re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text))
-    return list(emails), list(phones)
+# Function to get place details from Google Places API
+def get_places(query, location, radius):
+    url = f"https://maps.googleapis.com/maps/api/place/textsearch/json"
+    params = {
+        "query": f"{query} in {location}",
+        "radius": radius,
+        "key": API_KEY,
+    }
+    res = requests.get(url, params=params)
+    return res.json().get("results", [])
 
-# Button to trigger search
-if st.button("🚀 Search Businesses"):
-    if not query.strip():
-        st.warning("Please enter a keyword.")
-    else:
-        with st.spinner("Searching for businesses and extracting contact info..."):
-            try:
-                service = build("customsearch", "v1", developerKey=API_KEY)
-                results = service.cse().list(q=query, cx=CX, num=10).execute()
+# Function to get details (like phone number) for each place
+def get_place_details(place_id):
+    url = "https://maps.googleapis.com/maps/api/place/details/json"
+    params = {
+        "place_id": place_id,
+        "fields": "name,formatted_address,formatted_phone_number,website,url",
+        "key": API_KEY
+    }
+    res = requests.get(url, params=params)
+    return res.json().get("result", {})
 
-                lead_data = []
+# Search and collect data
+if submitted:
+    with st.spinner("Searching Google Business Profiles..."):
+        results = get_places(keyword, location, radius)
+        businesses = []
 
-                for item in results.get("items", []):
-                    title = item.get("title")
-                    link = item.get("link")
-                    snippet = item.get("snippet", "")
-                    domain = urlparse(link).netloc
+        for place in results:
+            details = get_place_details(place['place_id'])
+            businesses.append({
+                "Name": details.get("name", ""),
+                "Address": details.get("formatted_address", ""),
+                "Phone": details.get("formatted_phone_number", ""),
+                "Website": details.get("website", ""),
+                "Google Maps URL": details.get("url", ""),
+            })
 
-                    st.write(f"🔗 Scanning: {link}")
-                    try:
-                        res = requests.get(link, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-                        if res.status_code == 200:
-                            emails, phones = extract_contacts(res.text)
-                            lead_data.append({
-                                "Business Name": title,
-                                "Website": link,
-                                "Domain": domain,
-                                "Snippet": snippet,
-                                "Email(s)": ", ".join(emails),
-                                "Phone(s)": ", ".join(phones)
-                            })
-                    except:
-                        continue
+        df = pd.DataFrame(businesses)
+        if not df.empty:
+            st.success(f"Found {len(df)} businesses!")
+            st.dataframe(df)
 
-                # Convert to DataFrame
-                if lead_data:
-                    df = pd.DataFrame(lead_data)
-                    st.success(f"Found {len(df)} business leads!")
-                    st.dataframe(df)
-
-                    # Downloadable CSV
-                    csv = df.to_csv(index=False).encode("utf-8")
-                    st.download_button(
-                        label="📥 Download Lead Data as CSV",
-                        data=csv,
-                        file_name="business_leads.csv",
-                        mime="text/csv"
-                    )
-                else:
-                    st.info("No contacts found from the top results.")
-            except Exception as e:
-                st.error(f"❌ Error: {e}")
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "📥 Download Lead List as CSV",
+                data=csv,
+                file_name=f"{keyword}_{location}_leads.csv",
+                mime="text/csv"
+            )
+        else:
+            st.warning("No businesses found.")
